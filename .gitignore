@@ -1,0 +1,24 @@
+# Environment
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Data: the plain CSV is too big for GitHub; commit the .csv.gz copy instead
+# (made by: python scripts/compress_dataset.py)
+data/*.csv
+data/*.rar
+
+# Generated artifacts
+outputs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/public/results.json
+
+# OS / editor
+.DS_Store
+Thumbs.db

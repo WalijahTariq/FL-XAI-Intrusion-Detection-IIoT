@@ -1,0 +1,168 @@
+# CI/CD for the FL-XAI paper reproduction.
+#
+#   push to main  ->  test  ->  train (real dataset)  ->  deploy results page to GitHub Pages
+#   pull request  ->  test only
+#
+# Every push re-runs the pipeline with the code as it is in that commit, so any
+# change you make (e.g. a hyperparameter in src/config.py) appears on the page.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # adds a "Run workflow" button in the Actions tab
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  MPLBACKEND: Agg # no screen on the runner; draw plots off-screen
+
+jobs:
+  test:
+    name: Test (Python + TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run Python tests (synthetic data, checks the code runs end to end)
+        run: python -m pytest
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check and build the frontend
+        working-directory: frontend
+        run: npm run build
+
+  train:
+    name: Train models on the real dataset
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check the dataset is in the repository
+        run: |
+          ls -la data/
+          test -f data/ML-EdgeIIoT-dataset.csv.gz || test -f data/ML-EdgeIIoT-dataset.csv || {
+            echo "::error::Dataset missing. Commit data/ML-EdgeIIoT-dataset.csv.gz (run python scripts/compress_dataset.py)."
+            exit 1
+          }
+
+      - name: Run the full pipeline (fails if final accuracy < 0.90)
+        run: python scripts/run_pipeline.py --min-accuracy 0.90
+
+      - name: Upload results.json for the deploy job
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-json
+          path: frontend/public/results.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload pipeline outputs (CSV tables)
+        uses: actions/upload-artifact@v7
+        with:
+          name: pipeline-outputs
+          path: outputs/
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    name: Deploy results page to GitHub Pages
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Download results.json from the train job
+        uses: actions/download-artifact@v8
+        with:
+          name: results-json
+          path: frontend/public
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build the page with the new results
+        working-directory: frontend
+        run: |
+          test -f public/results.json
+          npm run build
+          test -f dist/results.json
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload page
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: frontend/dist
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5

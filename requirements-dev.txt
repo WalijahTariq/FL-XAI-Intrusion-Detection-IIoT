@@ -1,0 +1,2 @@
+# Extra packages needed only to run the tests (python -m pytest)
+pytest>=8
